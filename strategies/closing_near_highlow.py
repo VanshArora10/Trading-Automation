@@ -1,11 +1,12 @@
 import pandas as pd
 from datetime import datetime
 
+# Strategy only needs OHLC, no special indicators
 REQUIRED_INDICATORS = []
 
 def closing_near_highlow_daily(df, threshold=0.1):
     """
-    Daily strategy:
+    Daily strategy (backtest style):
     - If day's close is near high → BUY
     - If day's close is near low → SELL
     - Else HOLD
@@ -33,8 +34,11 @@ def closing_near_highlow_daily(df, threshold=0.1):
                 entry["signal"] = "SELL"
 
         if entry["signal"] in ["BUY", "SELL"]:
-            entry["exit"] = open_price_next
-            entry["pnl"] = open_price_next - entry_price if entry["signal"] == "BUY" else entry_price - open_price_next
+            entry["exit"] = tomorrow["open"]
+            if entry["signal"] == "BUY":
+                entry["pnl"] = entry["exit"] - entry["entry"]
+            else:
+                entry["pnl"] = entry["entry"] - entry["exit"]
         else:
             entry["exit"] = None
             entry["pnl"] = 0
@@ -46,16 +50,17 @@ def closing_near_highlow_daily(df, threshold=0.1):
 
 def generate_signal(ticker, multi_df, threshold=0.1):
     """
-    Live adapter:
-    Uses only last two daily bars to generate a one-row signal.
+    Live pipeline adapter:
+    - Uses only the latest daily bar
+    - Generates a one-row signal dict if condition met
     """
     df = multi_df.get("1d")
     if df is None or df.empty or len(df) < 2:
         return None
 
-    df = df.rename(columns=str.lower).dropna(subset=["high", "low", "close", "open"])
+    # Use last two days: today for signal, tomorrow placeholder for exit
     today = df.iloc[-2]
-    tomorrow = df.iloc[-1]
+    current = df.iloc[-1]
 
     close_price = float(today["close"])
     high_price = float(today["high"])
@@ -75,12 +80,13 @@ def generate_signal(ticker, multi_df, threshold=0.1):
     if not signal_type:
         return None
 
-    return {
+    # Build live signal dict
+    signal = {
         "Stock": ticker,
         "Side": signal_type,
-        "Entry": round(close_price, 2),
-        "ExitNextOpen": round(open_next, 2),
-        "Confidence": 0.7,
+        "Entry": round(float(today["close"]), 2),
+        "ExitNextOpen": round(float(tomorrow["open"]), 2),
+        "Confidence": 0.7,  # static for now
         "Strategy": "closing_near_highlow_daily",
         "Timestamp": datetime.now().astimezone().isoformat(),
     }
