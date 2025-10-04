@@ -1,15 +1,15 @@
 import pandas as pd
 from datetime import datetime
 
-# Strategy only needs OHLC, no special indicators
+# Strategy only needs OHLC data (no extra indicators)
 REQUIRED_INDICATORS = []
 
 def closing_near_highlow_daily(df, threshold=0.1):
     """
-    Daily strategy (backtest style):
-    - If day's close is near high → BUY
-    - If day's close is near low → SELL
-    - Else HOLD
+    Backtesting version of the strategy:
+    - BUY if close is near daily high
+    - SELL if close is near daily low
+    - HOLD otherwise
     Exit: next day's open
     """
     signals = []
@@ -35,10 +35,11 @@ def closing_near_highlow_daily(df, threshold=0.1):
 
         if entry["signal"] in ["BUY", "SELL"]:
             entry["exit"] = tomorrow["open"]
-            if entry["signal"] == "BUY":
-                entry["pnl"] = entry["exit"] - entry["entry"]
-            else:
-                entry["pnl"] = entry["entry"] - entry["exit"]
+            entry["pnl"] = (
+                entry["exit"] - entry["entry"]
+                if entry["signal"] == "BUY"
+                else entry["entry"] - entry["exit"]
+            )
         else:
             entry["exit"] = None
             entry["pnl"] = 0
@@ -50,17 +51,19 @@ def closing_near_highlow_daily(df, threshold=0.1):
 
 def generate_signal(ticker, multi_df, threshold=0.1):
     """
-    Live pipeline adapter:
-    - Uses only the latest daily bar
-    - Generates a one-row signal dict if condition met
+    Live-trading adapter version:
+    - Uses the most recent 2 daily candles (previous and current)
+    - Emits a single BUY/SELL signal if the latest bar matches the rule
     """
     df = multi_df.get("1d")
     if df is None or df.empty or len(df) < 2:
         return None
 
-    # Use last two days: today for signal, tomorrow placeholder for exit
+    df = df.rename(columns=str.lower)
+
+    # Use the previous day's bar for signal generation
     today = df.iloc[-2]
-    tomorrow = df.iloc[-1]
+    current = df.iloc[-1]
 
     day_range = today["high"] - today["low"]
     if day_range <= 0:
@@ -75,13 +78,14 @@ def generate_signal(ticker, multi_df, threshold=0.1):
     if not signal_type:
         return None
 
-    # Build live signal dict
     signal = {
         "Stock": ticker,
         "Side": signal_type,
         "Entry": round(float(today["close"]), 2),
-        "ExitNextOpen": round(float(tomorrow["open"]), 2),
-        "Confidence": 0.7,  # static for now
+        "StopLoss": round(float(today["low"]) if signal_type == "BUY" else float(today["high"]), 2),
+        "Target": round(float(today["close"] + (day_range * 1.5)) if signal_type == "BUY"
+                        else float(today["close"] - (day_range * 1.5)), 2),
+        "Confidence": 0.7,  # adjustable confidence threshold
         "Strategy": "closing_near_highlow_daily",
         "Timestamp": datetime.now().astimezone().isoformat()
     }
