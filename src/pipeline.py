@@ -5,7 +5,8 @@ from src.utils import save_json, append_csv, now_ist
 from src.stock_universe import build_watchlist
 from src.fetch_live_data import get_multi_timeframes
 from src.run_strategies import load_strategy_modules, get_required_indicators
-from src.utils.telegram_alert import send_telegram_message, can_send_heartbeat, update_heartbeat  # ✅ Single import
+from src.tele_utils.telegram_alert import send_telegram_message, can_send_heartbeat, update_heartbeat
+  # ✅ Single import
 
 
 def run(dry_run=True, pool=None):
