@@ -1,0 +1,8 @@
+pandas
+numpy
+yfinance
+pandas-ta
+requests
+python-dotenv
+pytz
+pytest
