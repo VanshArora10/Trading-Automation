@@ -2,6 +2,7 @@ import os
 import requests
 import argparse
 from datetime import datetime, time
+import pytz
 from src.helpers import save_json, append_csv, now_ist
 from src.stock_universe import build_watchlist
 from src.fetch_live_data import get_multi_timeframes
@@ -11,20 +12,27 @@ from src.utils.telegram_alert import send_telegram_message, can_send_heartbeat, 
 
 # ✅ Check Indian market open hours (Mon–Fri, 9:15 AM–3:30 PM IST)
 def is_market_open():
-    now = now_ist()
-    current_time = now.time()
+    ist = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(ist)
     market_open = time(9, 15)
     market_close = time(15, 30)
-    # Monday = 0, Sunday = 6
-    return now.weekday() < 5 and market_open <= current_time <= market_close
+    return now.weekday() < 5 and market_open <= now.time() <= market_close
 
 
 def run(dry_run=True, pool=None):
     # 🕘 Skip execution if market closed
     if not is_market_open():
-        msg = "⏸ Market closed — skipping this run."
-        print(msg)
-        send_telegram_message(msg)
+        msg = "⏸ Market closed — skipping today's runs."
+        stamp_file = "output/last_closed_notice.txt"
+        today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+
+        # ✅ Send only once per day
+        if not os.path.exists(stamp_file) or open(stamp_file).read().strip() != str(today):
+            send_telegram_message(msg)
+            with open(stamp_file, "w") as f:
+                f.write(str(today))
+        else:
+            print("Market closed — already notified today.")
         return []
 
     print("DEBUG: Loading strategies...")
@@ -49,10 +57,8 @@ def run(dry_run=True, pool=None):
                         strat_signals[name].append(sig)
                 except Exception as e:
                     print(f"ERROR in strategy {name} for {t}: {e}")
-                    continue
         except Exception as e:
             print(f"ERROR fetching data for {t}: {e}")
-            continue
 
     # Deduplicate by ticker + side
     unique = {}
