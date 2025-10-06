@@ -23,6 +23,7 @@ def run(dry_run=True, pool=None):
         stamp_file = "output/last_closed_notice.txt"
         today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
 
+        # send only once per day
         if not os.path.exists(stamp_file) or open(stamp_file).read().strip() != str(today):
             send_telegram_message(msg)
             with open(stamp_file, "w") as f:
@@ -50,6 +51,9 @@ def run(dry_run=True, pool=None):
                     print(f"DEBUG: {name} on {t} returned:", sig)
                     if sig and sig.get("Confidence", 0) >= 0.6:
                         sig["Strategy"] = sig.get("Strategy", name)
+                        # add safety defaults if missing
+                        sig.setdefault("StopLoss", round(sig["Entry"] * 0.985, 2))  # 1.5% stop loss
+                        sig.setdefault("Target", round(sig["Entry"] * 1.015, 2))   # 1.5% target
                         signals.append(sig)
                         strat_signals[name].append(sig)
                 except Exception as e:
@@ -57,7 +61,7 @@ def run(dry_run=True, pool=None):
         except Exception as e:
             print(f"ERROR fetching data for {t}: {e}")
 
-    # ✅ Deduplicate signals by stock + side
+    # ✅ Deduplicate by stock + side
     unique = {}
     for s in signals:
         key = f"{s['Stock']}|{s['Side']}"
@@ -75,10 +79,10 @@ def run(dry_run=True, pool=None):
             if sigs:
                 append_csv(sigs, f"output/strategy_logs/{strat_name}_log.csv")
 
-    # ✅ Telegram notification logic
+    # ✅ Telegram notification
     if not dry_run:
         if signals:
-            # Build detailed trade message
+            # Build detailed message for all trades
             trade_msgs = []
             for s in final:
                 msg = (
@@ -86,17 +90,18 @@ def run(dry_run=True, pool=None):
                     f"🏷️ Stock: {s['Stock']}\n"
                     f"📈 Side: {s['Side']}\n"
                     f"💰 Entry: {s.get('Entry', 'N/A')}\n"
-                    f"🎯 Exit (Next Open): {s.get('ExitNextOpen', 'N/A')}\n"
+                    f"🎯 Target: {s.get('Target', 'N/A')}\n"
+                    f"🛑 StopLoss: {s.get('StopLoss', 'N/A')}\n"
                     f"⚡ Confidence: {s.get('Confidence', 'N/A')}\n"
                     f"🧠 Strategy: {s['Strategy']}\n"
                     f"🕒 Time: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
                 trade_msgs.append(msg)
 
-            # Combine and send
+            # Combine and send all at once
             send_telegram_message("🚀 *Trading Signals Generated!*\n\n" + "\n\n".join(trade_msgs))
         else:
-            # Send heartbeat only once per hour
+            # Send "active" heartbeat once every hour only
             if can_send_heartbeat():
                 send_telegram_message("⏳ No trades found yet — system active ✅")
                 update_heartbeat()
