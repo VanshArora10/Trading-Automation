@@ -3,6 +3,7 @@ import json
 import time
 import requests
 from dotenv import load_dotenv
+import requests, os
 
 load_dotenv()
 
@@ -57,3 +58,16 @@ def update_heartbeat():
     os.makedirs(os.path.dirname(HEARTBEAT_FILE), exist_ok=True)
     with open(HEARTBEAT_FILE, "w") as f:
         json.dump({"timestamp": time.time()}, f)
+
+
+def send_to_google_sheets(signal_list):
+    """Send signals to Google Sheet via Apps Script webhook"""
+    SHEET_WEBHOOK = os.getenv("SHEET_WEBHOOK_URL")
+    if not SHEET_WEBHOOK:
+        print("⚠️ Google Sheet webhook not configured.")
+        return
+    try:
+        requests.post(SHEET_WEBHOOK, json=signal_list, timeout=5)
+        print("✅ Sent signals to Google Sheet.")
+    except Exception as e:
+        print("❌ Error sending to Google Sheet:", e)

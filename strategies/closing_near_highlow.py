@@ -6,6 +6,8 @@ import numpy as np
 # No external indicator requirement; we compute ATR fallback if needed.
 REQUIRED_INDICATORS = []
 
+STRATEGY_TYPE = "daily"  # or "SWING" based on your strategy design
+
 
 def _safe_float(x):
     """Convert scalar/1-element Series to float safely."""
