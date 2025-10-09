@@ -203,7 +203,26 @@ def run(dry_run=True, pool=None):
 
 
 if __name__ == "__main__":
+    import pytz
+    from datetime import datetime, time
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Do not send Telegram messages")
     args = parser.parse_args()
-    run(dry_run=args.dry_run)
+
+    # --- Run only during market hours (9:15 to 15:30 IST) ---
+    now = datetime.now(pytz.timezone("Asia/Kolkata")).time()
+    if time(9, 15) <= now <= time(15, 30):
+        print("📈 Market open — running trading pipeline...")
+        results = run(dry_run=args.dry_run)
+
+        # --- After generating trades, run PnL tracker automatically ---
+        try:
+            from src.pnl_tracker import run as run_pnl
+            print("\n🔁 Running PnL tracker to update Google Sheet and Telegram...")
+            run_pnl()
+            print("✅ PnL tracker completed successfully.\n")
+        except Exception as e:
+            print(f"⚠️ Error running PnL tracker automatically: {e}")
+
+    else:
+        print("⏸ Market closed — skipping trade + PnL updates.")
