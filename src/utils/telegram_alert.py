@@ -3,33 +3,37 @@ import json
 import time
 import requests
 from dotenv import load_dotenv
-import requests, os
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip().replace('"', '')
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip().replace('"', '')
 HEARTBEAT_FILE = "output/last_heartbeat.json"
 
 def send_telegram_message(message: str):
     """
-    Sends a Telegram message to the configured chat.
+    Sends a Telegram message to the configured chat with Markdown enabled.
     """
     if not BOT_TOKEN or not CHAT_ID:
-        print("⚠️ Telegram not configured properly.")
+        print("⚠️ Telegram not configured properly (missing BOT_TOKEN or CHAT_ID).")
         return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message}
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown",  # ✅ Enable formatting
+        "disable_web_page_preview": True
+    }
 
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            print("✅ Telegram message sent:", message)
+            print(f"✅ Telegram message sent successfully to {CHAT_ID}")
         else:
-            print(f"❌ Telegram failed ({response.status_code}): {response.text}")
-    except Exception as e:
-        print("⚠️ Telegram send failed:", e)
+            print(f"❌ Telegram API Error {response.status_code}: {response.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ Telegram send failed due to network error: {e}")
 
 
 def can_send_heartbeat(interval_minutes=60):
@@ -61,13 +65,18 @@ def update_heartbeat():
 
 
 def send_to_google_sheets(signal_list):
-    """Send signals to Google Sheet via Apps Script webhook"""
+    """
+    Sends trade signals to Google Sheet via webhook URL.
+    """
     SHEET_WEBHOOK = os.getenv("SHEET_WEBHOOK_URL")
     if not SHEET_WEBHOOK:
         print("⚠️ Google Sheet webhook not configured.")
         return
     try:
-        requests.post(SHEET_WEBHOOK, json=signal_list, timeout=5)
-        print("✅ Sent signals to Google Sheet.")
+        resp = requests.post(SHEET_WEBHOOK, json=signal_list, timeout=5)
+        if resp.status_code == 200:
+            print("✅ Sent signals to Google Sheet successfully.")
+        else:
+            print(f"❌ Google Sheet webhook failed ({resp.status_code}): {resp.text[:150]}")
     except Exception as e:
         print("❌ Error sending to Google Sheet:", e)

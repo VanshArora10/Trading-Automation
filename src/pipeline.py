@@ -6,18 +6,19 @@ from datetime import datetime, time
 import requests
 import pandas as pd
 from dotenv import load_dotenv
-from src.helpers import save_json, append_csv, now_ist
-from src.stock_universe import build_watchlist
-from src.fetch_live_data import get_multi_timeframes
-from src.run_strategies import load_strategy_modules, get_required_indicators
-from src.utils.telegram_alert import send_telegram_message, can_send_heartbeat, update_heartbeat
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import yfinance as yf
 
-load_dotenv()
+# === Local imports ===
+from src.helpers import save_json, append_csv, now_ist
+from src.stock_universe import build_watchlist
+from src.fetch_live_data import get_multi_timeframes
+from src.run_strategies import load_strategy_modules, get_required_indicators
+from src.utils.telegram_alert import send_telegram_message
 
-# === Google Sheet Setup ===
+# === Setup ===
+load_dotenv()
 SHEET_ID = os.getenv("SHEET_ID")
 SHEET_NAME = os.getenv("SHEET_NAME")
 SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
@@ -34,10 +35,12 @@ def is_market_open():
     now = ist_now()
     return now.weekday() < 5 and time(9, 15) <= now.time() <= time(15, 30)
 
-# === Send to Google Sheet ===
+# === Google Sheets ===
 def send_to_google_sheets(signals):
+    """Append all signals to the Google Sheet"""
     if not signals:
         return
+
     rows = [
         [
             s.get("Timestamp", ist_now().strftime("%d/%m/%Y %H:%M:%S")),
@@ -46,6 +49,7 @@ def send_to_google_sheets(signals):
         ]
         for s in signals
     ]
+
     try:
         sheet.values().append(
             spreadsheetId=SHEET_ID,
@@ -58,17 +62,18 @@ def send_to_google_sheets(signals):
     except Exception as e:
         print(f"❌ Google Sheet update failed: {e}")
 
-# === Telegram Alerts (Top Signals Only) ===
-def send_top_trades(signals, limit=5):
-    """Send only the top few trades by confidence to Telegram."""
-    if not signals:
+# === Telegram Alerts (High Confidence Only) ===
+def send_high_confidence_trades(signals, min_confidence=0.8, limit=5):
+    """Send only high-confidence trades to Telegram."""
+    high_conf = [s for s in signals if s.get("Confidence", 0) >= min_confidence]
+    if not high_conf:
+        print("⚠️ No high-confidence trades to send.")
         return
 
-    # Sort by confidence descending
-    signals = sorted(signals, key=lambda x: x.get("Confidence", 0), reverse=True)
-    top_signals = signals[:limit]
+    # Sort & limit
+    top_signals = sorted(high_conf, key=lambda x: x["Confidence"], reverse=True)[:limit]
 
-    msg = "🚀 *Top Trade Signals*\n\n"
+    msg = "🚀 *High-Confidence Trade Signals*\n\n"
     for s in top_signals:
         msg += (
             f"🏷️ {s['Stock']} ({s['Strategy']})\n"
@@ -76,63 +81,50 @@ def send_top_trades(signals, limit=5):
             f"🎯 Target: {s['Target']} | 🛑 SL: {s['StopLoss']}\n"
             f"⚡ Confidence: {s.get('Confidence', 0):.2f}\n\n"
         )
+    msg += f"📊 Showing top {len(top_signals)} high-confidence trades."
 
-    msg += f"📊 Showing top {len(top_signals)} of {len(signals)} total trades."
     try:
         send_telegram_message(msg)
-        print("✅ Sent top trade summary to Telegram.")
+        print(f"✅ Sent {len(top_signals)} high-confidence trades to Telegram.")
     except Exception as e:
         print(f"⚠️ Telegram send failed: {e}")
 
-# === PnL Evaluation ===
+# === Evaluate PnL ===
 def evaluate_pnl(signals):
     results = []
     for s in signals:
-        symbol = s["Stock"]
-        side = s["Side"]
-        entry = s["Entry"]
-        target = s["Target"]
-        stop = s["StopLoss"]
-        strategy = s["Strategy"]
         try:
-            df = yf.download(symbol, period="1d", interval="1m", progress=False)
+            df = yf.download(s["Stock"], period="1d", interval="1m", progress=False, auto_adjust=True)
             if df.empty:
                 continue
             last_price = round(df["Close"].iloc[-1], 2)
 
+            entry, target, stop, side = s["Entry"], s["Target"], s["StopLoss"], s["Side"]
+
             if side == "BUY":
                 if last_price >= target:
-                    pnl = round(((target - entry) / entry) * 100, 2)
-                    status = "Target Hit"
+                    pnl, status = ((target - entry) / entry) * 100, "Target Hit"
                 elif last_price <= stop:
-                    pnl = round(((stop - entry) / entry) * 100, 2)
-                    status = "SL Hit"
+                    pnl, status = ((stop - entry) / entry) * 100, "SL Hit"
                 else:
-                    pnl = round(((last_price - entry) / entry) * 100, 2)
-                    status = "Open"
+                    pnl, status = ((last_price - entry) / entry) * 100, "Open"
             else:  # SELL
                 if last_price <= target:
-                    pnl = round(((entry - target) / entry) * 100, 2)
-                    status = "Target Hit"
+                    pnl, status = ((entry - target) / entry) * 100, "Target Hit"
                 elif last_price >= stop:
-                    pnl = round(((entry - stop) / entry) * 100, 2)
-                    status = "SL Hit"
+                    pnl, status = ((entry - stop) / entry) * 100, "SL Hit"
                 else:
-                    pnl = round(((entry - last_price) / entry) * 100, 2)
-                    status = "Open"
+                    pnl, status = ((entry - last_price) / entry) * 100, "Open"
 
             results.append({
-                "Stock": symbol,
-                "Strategy": strategy,
-                "Side": side,
-                "Result": status,
-                "PnL%": pnl
+                "Stock": s["Stock"], "Strategy": s["Strategy"], "Side": side,
+                "Result": status, "PnL%": round(pnl, 2)
             })
         except Exception as e:
-            print(f"Error evaluating {symbol}: {e}")
+            print(f"Error evaluating {s['Stock']}: {e}")
     return results
 
-# === Telegram EOD Summary ===
+# === EOD Summary ===
 def send_eod_summary(results):
     if not results:
         send_telegram_message("⚠️ No trades today to evaluate.")
@@ -154,7 +146,7 @@ def send_eod_summary(results):
     )
 
     msg = (
-        f"📊 *End of Day Trading Summary*\n\n"
+        f"📊 *End-of-Day Summary*\n\n"
         f"✅ Target Hits: {hits}\n"
         f"❌ Stoploss Hits: {losses}\n"
         f"⏳ Open Trades: {open_trades}\n"
@@ -162,10 +154,8 @@ def send_eod_summary(results):
         f"📈 Total Trades: {total}\n\n"
         f"📊 *Strategy Performance:*\n"
     )
-
     for strat, pnl in strat_perf.items():
         msg += f"• {strat}: {pnl}% avg PnL\n"
-
     msg += "\n💹 System evaluated all trades automatically."
     send_telegram_message(msg)
     print("✅ Telegram EOD summary sent.")
@@ -179,9 +169,8 @@ def run(dry_run=True, pool=None):
     print("⚙️ Loading strategies...")
     strategies = load_strategy_modules()
     needed_indicators = get_required_indicators(strategies)
-
     watchlist = build_watchlist(pool_tickers=pool)
-    signals, strat_signals = [], {name: [] for name, _ in strategies}
+    signals = []
 
     for t in watchlist:
         try:
@@ -197,28 +186,35 @@ def run(dry_run=True, pool=None):
                 sig.setdefault("Target", round(sig["Entry"] * 1.015, 2))
                 sig["Timestamp"] = ist_now().strftime("%d/%m/%Y %H:%M:%S")
 
-                if sig.get("Confidence", 0) < 0.4:
+                # Skip low-confidence signals
+                if sig.get("Confidence", 0) < 0.3:
                     continue
 
                 signals.append(sig)
-                strat_signals[name].append(sig)
-
         except Exception as e:
-            print(f"Error fetching {t}: {e}")
+            print(f"Error processing {t}: {e}")
 
     if not signals:
         print("⚠️ No signals found.")
         return []
 
-    # === Save, Upload, Notify ===
     save_json(signals, "output/live_signals.json")
     append_csv(signals, "output/trade_log.csv")
     send_to_google_sheets(signals)
-    send_top_trades(signals, limit=5)  # 👈 Only send top 5 to Telegram
+    send_high_confidence_trades(signals, min_confidence=0.8, limit=3)
 
-    print(f"✅ Logged {len(signals)} trades to Google Sheets.")
+    print(f"✅ Logged {len(signals)} trades to Google Sheet.")
 
-    # === End-of-Day Evaluation ===
+    # === Auto-run PnL Tracker ===
+    try:
+        print("\n🔁 Running automatic PnL tracker after trade generation...")
+        from src.pnl_tracker import run as run_pnl
+        run_pnl()
+        print("✅ PnL tracker completed successfully.\n")
+    except Exception as e:
+        print(f"⚠️ Error running PnL tracker automatically: {e}")
+
+    # === EOD Summary at 3:30 PM ===
     now = ist_now().time()
     if now >= time(15, 30):
         results = evaluate_pnl(signals)
@@ -230,13 +226,12 @@ def run(dry_run=True, pool=None):
 # === Entry Point ===
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true", help="Do not send Telegram messages")
+    parser.add_argument("--dry-run", action="store_true", help="Skip Telegram messages")
     args = parser.parse_args()
 
     now = datetime.now(pytz.timezone("Asia/Kolkata")).time()
-
     if time(9, 15) <= now <= time(15, 30):
         print("📈 Market open — running trading pipeline...")
-        results = run(dry_run=args.dry_run)
+        run(dry_run=args.dry_run)
     else:
         print("⏸ Market closed — skipping trade + PnL updates.")
