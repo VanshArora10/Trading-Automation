@@ -1,0 +1,22 @@
+{
+  "2025-10-09": [
+    "RELIANCE.NS|BUY|market_structure_orderblock",
+    "BHARTIARTL.NS|BUY|market_structure_orderblock",
+    "SBIN.NS|SELL|market_structure_orderblock",
+    "TATAMOTORS.NS|SELL|market_structure_orderblock",
+    "TATASTEEL.NS|BUY|market_structure_orderblock",
+    "INFY.NS|BUY|market_structure_orderblock",
+    "ICICIBANK.NS|BUY|market_structure_orderblock",
+    "ITC.NS|SELL|market_structure_orderblock",
+    "HDFCLIFE.NS|SELL|market_structure_orderblock",
+    "WIPRO.NS|BUY|market_structure_orderblock",
+    "ADANIENT.NS|BUY|market_structure_orderblock",
+    "TCS.NS|BUY|market_structure_orderblock",
+    "KOTAKBANK.NS|BUY|market_structure_orderblock",
+    "TATAMOTORS.NS|SELL|orb_trend_filter",
+    "LT.NS|BUY|market_structure_orderblock",
+    "SUNPHARMA.NS|BUY|market_structure_orderblock",
+    "TCS.NS|BUY|orb_trend_filter",
+    "TITAN.NS|BUY|market_structure_orderblock"
+  ]
+}

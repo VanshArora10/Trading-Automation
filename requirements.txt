@@ -7,3 +7,10 @@ python-dotenv
 pytz
 pytest
 flask
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+gspread
+yfinance
+python-dotenv

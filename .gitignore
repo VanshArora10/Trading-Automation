@@ -1,3 +1,4 @@
 .env
 *.env
 .env.*
+service_account.json

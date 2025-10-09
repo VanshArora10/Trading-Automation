@@ -1,209 +1,207 @@
 import os
-import requests
 import json
 import argparse
 import pytz
 from datetime import datetime, time
+import requests
+import pandas as pd
+from dotenv import load_dotenv
 from src.helpers import save_json, append_csv, now_ist
 from src.stock_universe import build_watchlist
 from src.fetch_live_data import get_multi_timeframes
 from src.run_strategies import load_strategy_modules, get_required_indicators
-from src.utils.telegram_alert import (
-    send_telegram_message,
-    can_send_heartbeat,
-    update_heartbeat,
-)
+from src.utils.telegram_alert import send_telegram_message, can_send_heartbeat, update_heartbeat
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+import yfinance as yf
 
-# === Tracking files ===
-LAST_DAILY_SIGNAL_FILE = "output/last_daily_signal.txt"
-LAST_INTRADAY_FILE = "output/last_intraday_signals.json"
+load_dotenv()
 
+# === Google Sheet Setup ===
+SHEET_ID = os.getenv("SHEET_ID")
+SHEET_NAME = os.getenv("SHEET_NAME")
+SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# === Utility functions ===
+creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+sheet = build("sheets", "v4", credentials=creds).spreadsheets()
+
+# === Utility ===
 def ist_now():
     return datetime.now(pytz.timezone("Asia/Kolkata"))
 
-
-def already_sent_today():
-    """Check if daily strategy alert was already sent"""
-    today = ist_now().date()
-    if os.path.exists(LAST_DAILY_SIGNAL_FILE):
-        with open(LAST_DAILY_SIGNAL_FILE, "r") as f:
-            if f.read().strip() == str(today):
-                return True
-    return False
-
-
-def mark_daily_sent_today():
-    """Mark that daily signals were sent today"""
-    today = ist_now().date()
-    os.makedirs("output", exist_ok=True)
-    with open(LAST_DAILY_SIGNAL_FILE, "w") as f:
-        f.write(str(today))
-
-
 def is_market_open():
-    """Indian market open hours (Mon–Fri, 9:15–15:30 IST)"""
     now = ist_now()
     return now.weekday() < 5 and time(9, 15) <= now.time() <= time(15, 30)
 
-
-def load_last_intraday_signals():
-    """Load previously sent intraday signals (avoid repeat alerts)"""
-    if os.path.exists(LAST_INTRADAY_FILE):
-        try:
-            with open(LAST_INTRADAY_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-
-def save_intraday_signals(sent_dict):
-    """Save sent intraday signals"""
-    os.makedirs("output", exist_ok=True)
-    with open(LAST_INTRADAY_FILE, "w") as f:
-        json.dump(sent_dict, f, indent=2)
-
-
+# === Send to Google Sheet ===
 def send_to_google_sheets(signals):
-    """Send trade signals to Google Sheets via webhook"""
-    sheet_url = os.getenv("SHEET_WEBHOOK_URL")
-    if not sheet_url:
-        print("⚠️ Google Sheet webhook URL not set. Skipping sheet upload.")
+    if not signals:
+        return
+    rows = [
+        [
+            s.get("Timestamp", ist_now().strftime("%d/%m/%Y %H:%M:%S")),
+            s["Stock"], s["Side"], s["Entry"], s["Target"], s["StopLoss"],
+            s.get("Confidence", ""), s["Strategy"], s["StrategyType"]
+        ]
+        for s in signals
+    ]
+    try:
+        sheet.values().append(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!A2",
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": rows}
+        ).execute()
+        print("✅ Trades appended to Google Sheet.")
+    except Exception as e:
+        print(f"❌ Google Sheet update failed: {e}")
+
+# === PnL Evaluation ===
+def evaluate_pnl(signals):
+    results = []
+    for s in signals:
+        symbol = s["Stock"]
+        side = s["Side"]
+        entry = s["Entry"]
+        target = s["Target"]
+        stop = s["StopLoss"]
+        strategy = s["Strategy"]
+        try:
+            df = yf.download(symbol, period="1d", interval="1m", progress=False)
+            if df.empty:
+                continue
+            last_price = round(df["Close"].iloc[-1], 2)
+
+            if side == "BUY":
+                if last_price >= target:
+                    pnl = round(((target - entry) / entry) * 100, 2)
+                    status = "Target Hit"
+                elif last_price <= stop:
+                    pnl = round(((stop - entry) / entry) * 100, 2)
+                    status = "SL Hit"
+                else:
+                    pnl = round(((last_price - entry) / entry) * 100, 2)
+                    status = "Open"
+            else:  # SELL
+                if last_price <= target:
+                    pnl = round(((entry - target) / entry) * 100, 2)
+                    status = "Target Hit"
+                elif last_price >= stop:
+                    pnl = round(((entry - stop) / entry) * 100, 2)
+                    status = "SL Hit"
+                else:
+                    pnl = round(((entry - last_price) / entry) * 100, 2)
+                    status = "Open"
+
+            results.append({
+                "Stock": symbol,
+                "Strategy": strategy,
+                "Side": side,
+                "Result": status,
+                "PnL%": pnl
+            })
+        except Exception as e:
+            print(f"Error evaluating {symbol}: {e}")
+    return results
+
+# === Telegram EOD Summary ===
+def send_eod_summary(results):
+    if not results:
+        send_telegram_message("⚠️ No trades today to evaluate.")
         return
 
-    try:
-        resp = requests.post(sheet_url, json=signals, timeout=10)
-        if resp.status_code == 200:
-            print("✅ Uploaded to Google Sheets successfully.")
-        else:
-            print(f"⚠️ Google Sheet upload failed: {resp.status_code} - {resp.text}")
-    except Exception as e:
-        print("❌ Error sending to Google Sheets:", e)
+    df = pd.DataFrame(results)
+    total = len(df)
+    hits = len(df[df["Result"] == "Target Hit"])
+    losses = len(df[df["Result"] == "SL Hit"])
+    open_trades = len(df[df["Result"] == "Open"])
+    winrate = round((hits / (hits + losses)) * 100, 2) if (hits + losses) > 0 else 0
+
+    strat_perf = (
+        df.groupby("Strategy")["PnL%"]
+        .mean()
+        .sort_values(ascending=False)
+        .round(2)
+        .to_dict()
+    )
+
+    msg = (
+        f"📊 *End of Day Trading Summary*\n\n"
+        f"✅ *Target Hits:* {hits}\n"
+        f"❌ *Stoploss Hits:* {losses}\n"
+        f"⏳ *Open Trades:* {open_trades}\n"
+        f"🏆 *Win Rate:* {winrate}%\n"
+        f"📈 *Total Trades:* {total}\n\n"
+        f"📊 *Strategy Performance:*\n"
+    )
+
+    for strat, pnl in strat_perf.items():
+        msg += f"• {strat}: {pnl}% avg PnL\n"
+
+    msg += "\n💹 Great work today! System evaluated all trades automatically."
+    send_telegram_message(msg)
+    print("✅ Telegram EOD summary sent.")
 
 
-# === Main runner ===
+# === Main Runner ===
 def run(dry_run=True, pool=None):
-    # Skip runs outside market hours
     if not is_market_open():
-        msg = "⏸ Market closed — skipping runs outside trading hours."
-        stamp_file = "output/last_closed_notice.txt"
-        today = ist_now().date()
-        if not os.path.exists(stamp_file) or open(stamp_file).read().strip() != str(today):
-            send_telegram_message(msg)
-            with open(stamp_file, "w") as f:
-                f.write(str(today))
-        else:
-            print("Market closed — already notified today.")
+        print("⏸ Market closed — skipping automation run.")
         return []
 
-    print("DEBUG: Loading strategies...")
+    print("⚙️ Loading strategies...")
     strategies = load_strategy_modules()
-    print("DEBUG: Strategies loaded:", [name for name, _ in strategies])
     needed_indicators = get_required_indicators(strategies)
 
-    # Build watchlist
     watchlist = build_watchlist(pool_tickers=pool)
     signals, strat_signals = [], {name: [] for name, _ in strategies}
 
-    # Load previously sent intraday alerts
-    sent_intraday = load_last_intraday_signals()
-    today_key = str(ist_now().date())
-    if today_key not in sent_intraday:
-        sent_intraday[today_key] = []
-
-    # Run all strategies
     for t in watchlist:
         try:
             mdf = get_multi_timeframes(t, needed_indicators)
             for name, mod in strategies:
-                try:
-                    sig = mod.generate_signal(t, mdf)
-                    if not sig:
-                        continue
+                sig = mod.generate_signal(t, mdf)
+                if not sig:
+                    continue
 
-                    sig["Strategy"] = sig.get("Strategy", name)
-                    sig.setdefault("StrategyType", getattr(mod, "STRATEGY_TYPE", "daily"))
-                    sig.setdefault("StopLoss", round(sig["Entry"] * 0.985, 2))
-                    sig.setdefault("Target", round(sig["Entry"] * 1.015, 2))
+                sig["Strategy"] = sig.get("Strategy", name)
+                sig.setdefault("StrategyType", getattr(mod, "STRATEGY_TYPE", "daily"))
+                sig.setdefault("StopLoss", round(sig["Entry"] * 0.985, 2))
+                sig.setdefault("Target", round(sig["Entry"] * 1.015, 2))
+                sig["Timestamp"] = ist_now().strftime("%d/%m/%Y %H:%M:%S")
 
-                    if sig.get("Confidence", 0) < 0.6:
-                        continue
+                # Confidence filter
+                if sig.get("Confidence", 0) < 0.4:
+                    continue
 
-                    signals.append(sig)
-                    strat_signals[name].append(sig)
-                except Exception as e:
-                    print(f"ERROR in {name} for {t}: {e}")
+                signals.append(sig)
+                strat_signals[name].append(sig)
+
         except Exception as e:
-            print(f"ERROR fetching data for {t}: {e}")
+            print(f"Error fetching {t}: {e}")
 
-    # Deduplicate by stock + side
-    unique = {}
-    for s in signals:
-        key = f"{s['Stock']}|{s['Side']}"
-        if key not in unique or s["Confidence"] > unique[key]["Confidence"]:
-            unique[key] = s
-    final = list(unique.values())
+    if not signals:
+        print("⚠️ No signals found.")
+        return []
 
-    # Save logs locally
-    os.makedirs("output/strategy_logs", exist_ok=True)
-    save_json(final, "output/live_signals.json")
+    # === Save and Send to Sheet ===
+    save_json(signals, "output/live_signals.json")
+    append_csv(signals, "output/trade_log.csv")
+    send_to_google_sheets(signals)
+    print(f"✅ Logged {len(signals)} trades to Google Sheets.")
 
-    if signals:
-        append_csv(final, "output/trade_log.csv")
-        for strat_name, sigs in strat_signals.items():
-            if sigs:
-                append_csv(sigs, f"output/strategy_logs/{strat_name}_log.csv")
-
-    # === Telegram & Google Sheets ===
-    if not dry_run:
-        daily_signals = [s for s in final if s["StrategyType"] == "daily"]
-        intraday_signals = [s for s in final if s["StrategyType"] == "intraday"]
-
-        # --- DAILY ---
-        if daily_signals and not already_sent_today():
-            msgs = []
-            for s in daily_signals:
-                msgs.append(
-                    f"📊 *Daily Signal*\n🏷️ {s['Stock']}\n📈 {s['Side']}\n"
-                    f"💰 Entry: {s['Entry']}\n🎯 Target: {s['Target']}\n🛑 StopLoss: {s['StopLoss']}\n"
-                    f"⚡ Confidence: {s['Confidence']}\n🧠 {s['Strategy']}"
-                )
-            send_telegram_message("🚀 *Daily Trading Signals!*\n\n" + "\n\n".join(msgs))
-            send_to_google_sheets(daily_signals)
-            mark_daily_sent_today()
-
-        # --- INTRADAY ---
-        new_intraday = []
-        for s in intraday_signals:
-            key = f"{s['Stock']}|{s['Side']}|{s['Strategy']}"
-            if key not in sent_intraday[today_key]:
-                new_intraday.append(s)
-                sent_intraday[today_key].append(key)
-
-        if new_intraday:
-            msgs = []
-            for s in new_intraday:
-                msgs.append(
-                    f"⚡ *Intraday Signal*\n🏷️ {s['Stock']}\n📈 {s['Side']}\n"
-                    f"💰 Entry: {s['Entry']}\n🎯 Target: {s['Target']}\n🛑 StopLoss: {s['StopLoss']}\n"
-                    f"⚡ Confidence: {s['Confidence']}\n🧠 {s['Strategy']}"
-                )
-            send_telegram_message("\n\n".join(msgs))
-            send_to_google_sheets(new_intraday)
-            save_intraday_signals(sent_intraday)
-
-        # --- HEARTBEAT ---
-        if not signals and can_send_heartbeat():
-            send_telegram_message("⏳ No trades found yet — system active ✅")
-            update_heartbeat()
+    # === End-of-Day Evaluation ===
+    now = ist_now().time()
+    if now >= time(15, 30):
+        results = evaluate_pnl(signals)
+        send_eod_summary(results)
 
     print(f"[{now_ist().isoformat()}] ✅ Signals found: {len(signals)}")
-    return final
+    return signals
 
 
-# === Entry point ===
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Do not send Telegram messages")

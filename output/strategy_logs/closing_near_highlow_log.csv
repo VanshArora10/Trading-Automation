@@ -1,0 +1,10 @@
+Stock,Side,Action,Entry,StopLoss,Target,ExitRule,Confidence,Strategy,Timestamp,StrategyType
+SBIN.NS,SELL,ENTER,858.25,875.32,824.11,Target/Stop or manual exit,0.5,closing_near_highlow_refined,2025-10-09T12:13:44.820986+05:30,daily
+INFY.NS,BUY,ENTER,1495.0,1453.36,1578.28,Target/Stop or manual exit,0.61,closing_near_highlow_refined,2025-10-09T12:13:47.961245+05:30,daily
+SBIN.NS,SELL,ENTER,858.25,875.32,824.11,Target/Stop or manual exit,0.5,closing_near_highlow_refined,2025-10-09T12:16:28.004161+05:30,daily
+INFY.NS,BUY,ENTER,1495.0,1453.36,1578.28,Target/Stop or manual exit,0.61,closing_near_highlow_refined,2025-10-09T12:16:30.949831+05:30,daily
+SBIN.NS,SELL,ENTER,858.25,875.32,824.11,Target/Stop or manual exit,0.5,closing_near_highlow_refined,2025-10-09T12:17:47.667768+05:30,daily
+INFY.NS,BUY,ENTER,1495.0,1453.36,1578.28,Target/Stop or manual exit,0.61,closing_near_highlow_refined,2025-10-09T12:17:50.712894+05:30,daily
+SBIN.NS,SELL,ENTER,858.25,845.38,871.12,Target/Stop or manual exit,0.5,closing_near_highlow_refined,2025-10-09T12:41:11.537203+05:30,daily
+INFY.NS,BUY,ENTER,1495.0,1472.58,1517.42,Target/Stop or manual exit,0.61,closing_near_highlow_refined,2025-10-09T12:41:14.113176+05:30,daily
+SUNPHARMA.NS,SELL,ENTER,1631.6,1607.13,1656.07,Target/Stop or manual exit,0.46,closing_near_highlow_refined,2025-10-09T12:41:18.743903+05:30,daily
