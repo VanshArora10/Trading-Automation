@@ -54,9 +54,35 @@ def send_to_google_sheets(signals):
             insertDataOption="INSERT_ROWS",
             body={"values": rows}
         ).execute()
-        print("✅ Trades appended to Google Sheet.")
+        print(f"✅ {len(signals)} trades appended to Google Sheet.")
     except Exception as e:
         print(f"❌ Google Sheet update failed: {e}")
+
+# === Telegram Alerts (Top Signals Only) ===
+def send_top_trades(signals, limit=5):
+    """Send only the top few trades by confidence to Telegram."""
+    if not signals:
+        return
+
+    # Sort by confidence descending
+    signals = sorted(signals, key=lambda x: x.get("Confidence", 0), reverse=True)
+    top_signals = signals[:limit]
+
+    msg = "🚀 *Top Trade Signals*\n\n"
+    for s in top_signals:
+        msg += (
+            f"🏷️ {s['Stock']} ({s['Strategy']})\n"
+            f"📈 *{s['Side']}* | 💰 Entry: {s['Entry']}\n"
+            f"🎯 Target: {s['Target']} | 🛑 SL: {s['StopLoss']}\n"
+            f"⚡ Confidence: {s.get('Confidence', 0):.2f}\n\n"
+        )
+
+    msg += f"📊 Showing top {len(top_signals)} of {len(signals)} total trades."
+    try:
+        send_telegram_message(msg)
+        print("✅ Sent top trade summary to Telegram.")
+    except Exception as e:
+        print(f"⚠️ Telegram send failed: {e}")
 
 # === PnL Evaluation ===
 def evaluate_pnl(signals):
@@ -129,21 +155,20 @@ def send_eod_summary(results):
 
     msg = (
         f"📊 *End of Day Trading Summary*\n\n"
-        f"✅ *Target Hits:* {hits}\n"
-        f"❌ *Stoploss Hits:* {losses}\n"
-        f"⏳ *Open Trades:* {open_trades}\n"
-        f"🏆 *Win Rate:* {winrate}%\n"
-        f"📈 *Total Trades:* {total}\n\n"
+        f"✅ Target Hits: {hits}\n"
+        f"❌ Stoploss Hits: {losses}\n"
+        f"⏳ Open Trades: {open_trades}\n"
+        f"🏆 Win Rate: {winrate}%\n"
+        f"📈 Total Trades: {total}\n\n"
         f"📊 *Strategy Performance:*\n"
     )
 
     for strat, pnl in strat_perf.items():
         msg += f"• {strat}: {pnl}% avg PnL\n"
 
-    msg += "\n💹 Great work today! System evaluated all trades automatically."
+    msg += "\n💹 System evaluated all trades automatically."
     send_telegram_message(msg)
     print("✅ Telegram EOD summary sent.")
-
 
 # === Main Runner ===
 def run(dry_run=True, pool=None):
@@ -172,7 +197,6 @@ def run(dry_run=True, pool=None):
                 sig.setdefault("Target", round(sig["Entry"] * 1.015, 2))
                 sig["Timestamp"] = ist_now().strftime("%d/%m/%Y %H:%M:%S")
 
-                # Confidence filter
                 if sig.get("Confidence", 0) < 0.4:
                     continue
 
@@ -186,10 +210,12 @@ def run(dry_run=True, pool=None):
         print("⚠️ No signals found.")
         return []
 
-    # === Save and Send to Sheet ===
+    # === Save, Upload, Notify ===
     save_json(signals, "output/live_signals.json")
     append_csv(signals, "output/trade_log.csv")
     send_to_google_sheets(signals)
+    send_top_trades(signals, limit=5)  # 👈 Only send top 5 to Telegram
+
     print(f"✅ Logged {len(signals)} trades to Google Sheets.")
 
     # === End-of-Day Evaluation ===
@@ -201,28 +227,16 @@ def run(dry_run=True, pool=None):
     print(f"[{now_ist().isoformat()}] ✅ Signals found: {len(signals)}")
     return signals
 
-
+# === Entry Point ===
 if __name__ == "__main__":
-    import pytz
-    from datetime import datetime, time
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Do not send Telegram messages")
     args = parser.parse_args()
 
-    # --- Run only during market hours (9:15 to 15:30 IST) ---
     now = datetime.now(pytz.timezone("Asia/Kolkata")).time()
+
     if time(9, 15) <= now <= time(15, 30):
         print("📈 Market open — running trading pipeline...")
         results = run(dry_run=args.dry_run)
-
-        # --- After generating trades, run PnL tracker automatically ---
-        try:
-            from src.pnl_tracker import run as run_pnl
-            print("\n🔁 Running PnL tracker to update Google Sheet and Telegram...")
-            run_pnl()
-            print("✅ PnL tracker completed successfully.\n")
-        except Exception as e:
-            print(f"⚠️ Error running PnL tracker automatically: {e}")
-
     else:
         print("⏸ Market closed — skipping trade + PnL updates.")
